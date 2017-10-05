@@ -55,7 +55,7 @@ public:
     // Types for fisheye stream
     format_[rs::stream::fisheye] = rs::format::raw8;  // libRS type
     image_format_[rs::stream::fisheye] = CV_8UC1;     // CVBridge type
-    encoding_[rs::stream::fisheye] = sensor_msgs::image_encodings::TYPE_8UC1; // ROS message type
+    encoding_[rs::stream::fisheye] = sensor_msgs::image_encodings::MONO8; // ROS message type
     unit_step_size_[rs::stream::fisheye] = sizeof(unsigned char); // sensor_msgs::ImagePtr row step size
     stream_name_[rs::stream::fisheye] = "fisheye";
   }
@@ -103,6 +103,7 @@ private:
     pnh_.param("color_height", height_[rs::stream::color], COLOR_HEIGHT);
     pnh_.param("color_fps", fps_[rs::stream::color], COLOR_FPS);
     pnh_.param("enable_color", enable_[rs::stream::color], false);
+    pnh_.param("publish_undistorted_color", publish_undistorted_color_, false);
 
     pnh_.param("fisheye_width", width_[rs::stream::fisheye], FISHEYE_WIDTH);
     pnh_.param("fisheye_height", height_[rs::stream::fisheye], FISHEYE_HEIGHT);
@@ -161,7 +162,7 @@ private:
       isZR300_ = false;
       enable_[rs::stream::fisheye] = false;
 
-      if ((std::string(device_name).find("R200") == std::string::npos) && 
+      if ((std::string(device_name).find("R200") == std::string::npos) &&
           (std::string(device_name).find("LR200") == std::string::npos))
       {
         ROS_ERROR_STREAM("error: This ROS node supports R200, LR200, and ZR300 only.");
@@ -172,7 +173,7 @@ private:
     }
     else
     {
-      // Only enable ZR300 functionality if fisheye stream is enabled.  
+      // Only enable ZR300 functionality if fisheye stream is enabled.
       // Accel/Gyro automatically enabled when fisheye requested
       if (true == enable_[rs::stream::fisheye])
         isZR300_ = true;
@@ -190,37 +191,69 @@ private:
     if (true == enable_[rs::stream::color])
     {
       image_publishers_[rs::stream::color] = image_transport.advertise("camera/color/image_raw", 1);
-      info_publisher_[rs::stream::color] = 
+      info_publisher_[rs::stream::color] =
         node_handle.advertise< sensor_msgs::CameraInfo >("camera/color/camera_info", 1);
+
+      if (publish_undistorted_color_)
+      {
+        undist_color_publisher_ = image_transport.advertise("camera/color/image_rect", 1);
+      }
     }
 
     if (true == enable_[rs::stream::depth])
     {
       image_publishers_[rs::stream::depth] = image_transport.advertise("camera/depth/image_raw", 1);
-      info_publisher_[rs::stream::depth] = 
+      info_publisher_[rs::stream::depth] =
         node_handle.advertise< sensor_msgs::CameraInfo >("camera/depth/camera_info", 1);
-    
+
       pointcloud_publisher_ = node_handle.advertise<sensor_msgs::PointCloud2>("/camera/points", 1);
     }
 
     if (isZR300_)
     {
       // Stream publishers
-      image_publishers_[rs::stream::fisheye] = image_transport.advertise("camera/fisheye/image_raw", 1);
-      info_publisher_[rs::stream::fisheye] = 
-        node_handle.advertise< sensor_msgs::CameraInfo >("camera/fisheye/camera_info", 1);
+      if (true == enable_[rs::stream::fisheye])
+      {
+        image_publishers_[rs::stream::fisheye] = image_transport.advertise("camera/fisheye/image_raw", 1);
+        info_publisher_[rs::stream::fisheye] =
+            node_handle.advertise<sensor_msgs::CameraInfo>("camera/fisheye/camera_info", 1);
+      }
 
-      imu_publishers_[RS_EVENT_IMU_GYRO] = node_handle.advertise< sensor_msgs::Imu >("camera/gyro/sample", 100); 
+      imu_publishers_[RS_EVENT_IMU_GYRO] = node_handle.advertise< sensor_msgs::Imu >("camera/gyro/sample", 100);
       imu_publishers_[RS_EVENT_IMU_ACCEL] = node_handle.advertise< sensor_msgs::Imu >("camera/accel/sample", 100);
 
       // Latched topics
-      fe2imu_publisher_ = node_handle.advertise< Extrinsics >("camera/extrinsics/fisheye2imu", 1, true);
-      fe2depth_publisher_ = node_handle.advertise< Extrinsics >("camera/extrinsics/fisheye2depth", 1, true);
+      if (true == enable_[rs::stream::fisheye])
+      {
+        fe2imu_publisher_ = node_handle.advertise<Extrinsics>("camera/extrinsics/fisheye2imu", 1, true);
+        fe2depth_publisher_ = node_handle.advertise<Extrinsics>("camera/extrinsics/fisheye2depth", 1, true);
+      }
       accelInfo_publisher_ = node_handle.advertise< IMUInfo >("camera/accel/imu_info", 1, true);
       gyroInfo_publisher_ = node_handle.advertise< IMUInfo >("camera/gyro/imu_info", 1, true);
     }
   }//end setupPublishers
 
+  void initUndistortionParams(rs::stream stream)
+  {
+    cv::Matx33d K;
+    K(0, 0) = camera_info_[stream].K[0];
+    K(0, 1) = camera_info_[stream].K[1];
+    K(0, 2) = camera_info_[stream].K[2];
+    K(1, 0) = camera_info_[stream].K[3];
+    K(1, 1) = camera_info_[stream].K[4];
+    K(1, 2) = camera_info_[stream].K[5];
+    K(2, 2) = 1.0;
+
+    cv::Mat map_x, map_y, R;
+    R = cv::Mat::eye(3, 3, CV_32S);
+
+    cv::initUndistortRectifyMap(K, camera_info_[stream].D, R, K,
+                                cv::Size(width_[stream], height_[stream]),
+                                CV_32FC1, map_x, map_y);
+
+    remap_parameter_[stream][0] = map_x;
+    remap_parameter_[stream][1] = map_y;
+  }
 
   void setupStreams()
   {
@@ -236,7 +269,7 @@ private:
       stream_callback_per_stream[stream] = [this,stream](rs::frame frame)
       {
         image_[stream].data = (unsigned char *) frame.get_data();
-        
+
         if ((true == isZR300_) && (rs::timestamp_domain::microcontroller != frame.get_frame_timestamp_domain()))
         {
           ROS_ERROR_STREAM("error: Junk time stamp in stream:" << (int)(stream) <<
@@ -249,7 +282,7 @@ private:
         if(false == intialize_time_base_)
         {
           intialize_time_base_ = true;
-          ros_time_base_ = ros::Time::now();   
+          ros_time_base_ = ros::Time::now();
           camera_time_base_ = frame.get_timestamp();
         }
         double elapsed_camera_ms = (/*ms*/ frame.get_timestamp() - /*ms*/ camera_time_base_) / /*ms to seconds*/ 1000;
@@ -260,11 +293,11 @@ private:
         if((stream == rs::stream::depth) && (0 != pointcloud_publisher_.getNumSubscribers()))
           publishPCTopic(t);
 
-        seq_[stream] += 1;        
+        seq_[stream] += 1;
         if((0 != info_publisher_[stream].getNumSubscribers()) ||
-           (0 != image_publishers_[stream].getNumSubscribers())) 
+           (0 != image_publishers_[stream].getNumSubscribers()))
         {
-          sensor_msgs::ImagePtr img;          
+          sensor_msgs::ImagePtr img;
           img = cv_bridge::CvImage(std_msgs::Header(), encoding_[stream], image_[stream]).toImageMsg();
           img->width = image_[stream].cols;
           img->height = image_[stream].rows;
@@ -280,6 +313,29 @@ private:
           camera_info_[stream].header.seq = seq_[stream];
           info_publisher_[stream].publish(camera_info_[stream]);
         }
+
+        // Publishing undistorted color image
+        if (stream == rs::stream::color && publish_undistorted_color_ &&
+            0 != undist_color_publisher_.getNumSubscribers())
+        {
+          sensor_msgs::ImagePtr img;
+          cv::Mat dst;
+          const cv::Mat src = image_[stream];
+
+          cv::remap(src, dst, remap_parameter_[rs::stream::color][0], remap_parameter_[rs::stream::color][1],
+                    cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+
+          img = cv_bridge::CvImage(std_msgs::Header(), encoding_[stream], dst).toImageMsg();
+          img->width = image_[stream].cols;
+          img->height = image_[stream].rows;
+          img->is_bigendian = false;
+          img->step = image_[stream].cols * unit_step_size_[stream];
+          img->header.frame_id = optical_frame_id_[stream];
+          img->header.stamp = t;
+          img->header.seq = seq_[stream];
+
+          undist_color_publisher_.publish(img);
+        }
       };
 
       // Enable the stream
@@ -288,12 +344,15 @@ private:
       // Publish info about the stream
       getStreamCalibData(stream);
 
+      // Initialize Parameters to undistort the camera image via remapping
+      if (stream == rs::stream::color) initUndistortionParams(stream);
+
       // Setup stream callback for stream
-      image_[stream] = cv::Mat(camera_info_[stream].height, camera_info_[stream].width, 
+      image_[stream] = cv::Mat(camera_info_[stream].height, camera_info_[stream].width,
         image_format_[stream], cv::Scalar(0, 0, 0));
       device_->set_frame_callback(stream, stream_callback_per_stream[stream]);
 
-      ROS_INFO_STREAM("  enabled " << stream_name_[stream] << " stream, width: " 
+      ROS_INFO_STREAM("  enabled " << stream_name_[stream] << " stream, width: "
         << camera_info_[stream].width << " height: " << camera_info_[stream].height << " fps: " << fps_[stream]);
     }//end for
 
@@ -301,24 +360,24 @@ private:
     if (isZR300_)
     {
       // Needed to align image timestamps to common clock-domain with the motion events
-      device_->set_option(rs::option::fisheye_strobe, 1); 
+      device_->set_option(rs::option::fisheye_strobe, 1);
 
       // This option causes the fisheye image to be aquired in-sync with the depth image.
-      device_->set_option(rs::option::fisheye_external_trigger, 1); 
+      device_->set_option(rs::option::fisheye_external_trigger, 1);
       device_->set_option(rs::option::fisheye_color_auto_exposure, 1);
       seq_motion[RS_EVENT_IMU_GYRO] = 0;
       seq_motion[RS_EVENT_IMU_ACCEL] = 0;
-      
+
       //define callback to the motion events and set it.
       std::function<void(rs::motion_data)> motion_callback;
       motion_callback = [this](rs::motion_data entry)
       {
-        if ((entry.timestamp_data.source_id != RS_EVENT_IMU_GYRO) && 
+        if ((entry.timestamp_data.source_id != RS_EVENT_IMU_GYRO) &&
             (entry.timestamp_data.source_id != RS_EVENT_IMU_ACCEL))
           return;
 
         rs_event_source motionType = entry.timestamp_data.source_id;
-        
+
         // If there is nobody subscribed to the stream, do no further
         // processing
         if( 0 == imu_publishers_[motionType].getNumSubscribers())
@@ -424,7 +483,7 @@ private:
       break;
     case 1:
       // This is the same as "modified_brown_conrady", but used by ROS
-      camera_info_[stream].distortion_model = "plumb_bob"; 
+      camera_info_[stream].distortion_model = "plumb_bob";
       break;
     case 2:
       camera_info_[stream].distortion_model = "inverse_brown_conrady";
@@ -568,11 +627,29 @@ private:
     }
   }
 
+  uint32_t rgbFromTexCoord(cv::Mat tex, struct rs::float2 coord, rs::intrinsics tex_intrinsics)
+  {
+    auto pixel_x = (int)(coord.x * tex_intrinsics.width);
+    if (pixel_x < 0) pixel_x = 0;
+    if (pixel_x >= tex_intrinsics.width) pixel_x = tex_intrinsics.width - 1;
+
+    auto pixel_y = (int)(coord.y * tex_intrinsics.height);
+    if (pixel_y < 0) pixel_y = 0;
+    if (pixel_y >= tex_intrinsics.height) pixel_y = tex_intrinsics.height -1;
+
+    cv::Vec3b pixel_vec = tex.at<cv::Vec3b>(pixel_y, pixel_x);
+
+    return pixel_vec.val[2] | pixel_vec.val[1] << 8 | pixel_vec.val[0] << 16;
+  }
+
   void publishPCTopic(ros::Time t)
   {
     rs::intrinsics depth_intrinsic = device_->get_stream_intrinsics(rs::stream::depth);
+    rs::intrinsics color_intrinsic = device_->get_stream_intrinsics(rs::stream::color);
+    rs::extrinsics depth_extrinsics = device_->get_extrinsics(rs::stream::depth, rs::stream::color);
     float depth_scale_meters = device_->get_depth_scale();
-    
+    cv::Mat latest_frame = image_[rs::stream::color];
+
     sensor_msgs::PointCloud2 msg_pointcloud;
     msg_pointcloud.header.stamp = t;
     msg_pointcloud.header.frame_id = optical_frame_id_[rs::stream::depth];
@@ -581,23 +658,24 @@ private:
     msg_pointcloud.is_dense = true;
 
     sensor_msgs::PointCloud2Modifier modifier(msg_pointcloud);
-    modifier.setPointCloud2Fields(3, 
-      "x", 1, sensor_msgs::PointField::FLOAT32, 
-      "y", 1, sensor_msgs::PointField::FLOAT32, 
-      "z", 1, sensor_msgs::PointField::FLOAT32);
-    modifier.setPointCloud2FieldsByString(1, "xyz");
+    modifier.setPointCloud2Fields(4,
+      "x", 1, sensor_msgs::PointField::FLOAT32,
+      "y", 1, sensor_msgs::PointField::FLOAT32,
+      "z", 1, sensor_msgs::PointField::FLOAT32,
+      "rgb", 1, sensor_msgs::PointField::UINT32);
 
     for (int v = 0; v < depth_intrinsic.height; v++)
       for (int u = 0; u < depth_intrinsic.width; u++)
       {
         float depth_point[3], scaled_depth;
+        uint32_t pixel_color_value;
         uint16_t depth_value;
         int depth_offset, cloud_offset;
 
         // Offset into point cloud data, for point at u, v
         cloud_offset = (v * msg_pointcloud.row_step) + (u * msg_pointcloud.point_step);
 
-        // Retrieve depth value, and scale it in terms of meters 
+        // Retrieve depth value, and scale it in terms of meters
         depth_offset = (u * sizeof(uint16_t)) + (v * sizeof(uint16_t) * depth_intrinsic.width);
         memcpy(&depth_value, &image_[rs::stream::depth].data[depth_offset], sizeof(uint16_t));
         scaled_depth = static_cast<float>(depth_value) * depth_scale_meters;
@@ -607,23 +685,29 @@ private:
           depth_point[0] = 0.0f;
           depth_point[1] = 0.0f;
           depth_point[2] = 0.0f;
+          pixel_color_value = 0;
         }
         else
         {
           // Convert depth image to points in 3D space
           float depth_pixel[2] = {static_cast<float>(u), static_cast<float>(v)};
           rs_deproject_pixel_to_point(depth_point, &depth_intrinsic, depth_pixel, scaled_depth);
+
+          struct rs::float2 tex_coord = color_intrinsic.project_to_texcoord(depth_extrinsics.transform({depth_point[0],
+                                                                                                        depth_point[1],
+                                                                                                        depth_point[2]}));
+          pixel_color_value = rgbFromTexCoord(latest_frame, tex_coord, color_intrinsic);
         }
-        
-        // Assign 3d point
+
+        // Assign 3d point and rgb color
         memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[0].offset], &depth_point[0], sizeof(float)); // X
         memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[1].offset], &depth_point[1], sizeof(float)); // Y
         memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[2].offset], &depth_point[2], sizeof(float)); // Z
+        memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[3].offset], &pixel_color_value, sizeof(uint32_t)); // RGB
       } // for
-  
+
     pointcloud_publisher_.publish(msg_pointcloud);
   }
-
 
   void getImuInfo(rs::device* device, IMUInfo &accelInfo, IMUInfo &gyroInfo)
   {
@@ -700,6 +784,8 @@ private:
   std::map<rs::stream, bool> enable_;
   std::map<rs::stream, std::string> stream_name_;
   tf2_ros::StaticTransformBroadcaster static_tf_broadcaster_;
+  bool publish_undistorted_color_;
+  image_transport::Publisher undist_color_publisher_;
 
   // R200 and ZR300 types
   std::map<rs::stream, image_transport::Publisher> image_publishers_;
@@ -716,6 +802,7 @@ private:
   std::map<rs::stream, int> unit_step_size_;
   std::map<rs::stream, std::function<void(rs::frame)>> stream_callback_per_stream;
   std::map<rs::stream, sensor_msgs::CameraInfo> camera_info_;
+  std::map<rs::stream, cv::Mat[2]> remap_parameter_;
   ros::Publisher pointcloud_publisher_;
   bool intialize_time_base_;
   double camera_time_base_;
