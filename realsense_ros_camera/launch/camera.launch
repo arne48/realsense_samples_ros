@@ -19,11 +19,12 @@
   <arg name="fisheye_fps"         default="30" />
   <arg name="depth_fps"           default="30" />
   <arg name="color_fps"           default="30" />
+  <arg name="publish_undistorted_color" default="false"/>
 
-  <node pkg="nodelet" type="nodelet" name="$(arg manager)" args="manager" output="screen"/> 
+  <node pkg="nodelet" type="nodelet" name="$(arg manager)" args="manager" output="screen"/>
   <node pkg="nodelet" type="nodelet" name="realsense_ros_$(arg camera)" args="load realsense_ros_camera/NodeletCamera $(arg manager) --no-bond" output="screen">
     <param name="serial_no"                type="str"  value="$(arg serial_no)" />
-    
+
     <param name="fisheye_width"            type="int"  value="$(arg fisheye_width)" />
     <param name="fisheye_height"           type="int"  value="$(arg fisheye_height)" />
     <param name="enable_fisheye"           type="bool" value="$(arg enable_fisheye)" />
@@ -36,6 +37,7 @@
     <param name="fisheye_fps"              type="int"  value="$(arg fisheye_fps)" />
     <param name="depth_fps"                type="int"  value="$(arg depth_fps)" />
     <param name="color_fps"                type="int"  value="$(arg color_fps)" />
+    <param name="publish_undistorted_color" type="bool" value="$(arg publish_undistorted_color)" />
 
     <param name="depth_optical_frame_id"   type="str"  value="$(arg camera)_depth_optical_frame" />
     <param name="color_optical_frame_id"   type="str"  value="$(arg camera)_rgb_optical_frame" />
