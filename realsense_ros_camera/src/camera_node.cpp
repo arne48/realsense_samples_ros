@@ -627,7 +627,7 @@ private:
     }
   }
 
-  uint32_t rgbFromTexCoord(cv::Mat tex, struct rs::float2 coord, rs::intrinsics tex_intrinsics)
+  float rgbFromTexCoord(cv::Mat tex, struct rs::float2 coord, rs::intrinsics tex_intrinsics)
   {
     auto pixel_x = (int)(coord.x * tex_intrinsics.width);
     if (pixel_x < 0) pixel_x = 0;
@@ -662,7 +662,7 @@ private:
       "x", 1, sensor_msgs::PointField::FLOAT32,
       "y", 1, sensor_msgs::PointField::FLOAT32,
       "z", 1, sensor_msgs::PointField::FLOAT32,
-      "rgb", 1, sensor_msgs::PointField::UINT32);
+      "rgb", 1, sensor_msgs::PointField::FLOAT32);
 
     for (int v = 0; v < depth_intrinsic.height; v++)
       for (int u = 0; u < depth_intrinsic.width; u++)
@@ -703,7 +703,7 @@ private:
         memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[0].offset], &depth_point[0], sizeof(float)); // X
         memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[1].offset], &depth_point[1], sizeof(float)); // Y
         memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[2].offset], &depth_point[2], sizeof(float)); // Z
-        memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[3].offset], &pixel_color_value, sizeof(uint32_t)); // RGB
+        memcpy(&msg_pointcloud.data[cloud_offset + msg_pointcloud.fields[3].offset], &pixel_color_value, sizeof(float)); // RGB
       } // for
 
     pointcloud_publisher_.publish(msg_pointcloud);
